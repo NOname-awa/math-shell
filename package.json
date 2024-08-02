@@ -1,0 +1,22 @@
+{
+  "name": "math-shell",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "keywords": [
+    "math",
+    "shell",
+    "cli",
+    "calc"
+  ],
+  "author": "noname-awa",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.0.0",
+    "esprima": "^4.0.1",
+    "mathjs": "^11.7.0"
+  },
+  "type": "module"
+}
