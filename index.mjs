@@ -51,7 +51,7 @@ class MathShell {
 
         // Highlight parentheses with rainbow colors
         let colorIndex = 0;
-        const colors = [chalk.red, chalk.yellow, chalk.blue];
+        const colors = [chalk.yellow, chalk.hex('#800080'), chalk.blue];
         let stack = [];
 
         highlighted = highlighted.replace(/[\(\)]/g, (match) => {
@@ -62,7 +62,7 @@ class MathShell {
                 return coloredBracket;
             } else if (match === ')') {
                 colorIndex = stack.pop();
-                return colors[colorIndex](match);
+                return (colors[colorIndex] ?? chalk.red)(match);
             }
             return match;
         });
