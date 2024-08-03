@@ -1,5 +1,5 @@
 import readline from 'readline';
-import * as math from 'mathjs';
+import Decimal from 'decimal.js';
 import esprima from 'esprima';
 import chalk from 'chalk';
 
@@ -15,39 +15,56 @@ class MathShell {
      * @returns {Object} The parsed expression node.
      */
     parseExpression(expression) {
-        return esprima.parseScript(expression);
+        try {
+            return esprima.parseScript(expression);
+        } catch (error) {
+            throw new SyntaxError(`Syntax Error: ${error.message} in expression "${expression}"`);
+        }
     }
 
     /**
      * Evaluates a parsed expression node.
      * @param {Object} node - The expression node to evaluate.
-     * @returns {number} The result of the evaluation.
+     * @returns {Decimal} The result of the evaluation.
      * @throws Will throw an error if the node type is unsupported.
      */
     evaluate(node) {
         let self = this;
 
         function evaluateNode(node) {
-            switch (node.type) {
-                case 'Literal':
-                    return node.value;
-                case 'BinaryExpression':
-                    return self.OPERATORS[node.operator](evaluateNode(node.left), evaluateNode(node.right));
-                case 'UnaryExpression':
-                    return self.OPERATORS[node.operator](evaluateNode(node.argument));
-                case 'CallExpression':
-                    let func = node.callee.name;
-                    if (self.FUNCTIONS[func]) {
-                        let arg = evaluateNode(node.arguments[0]);
-                        if (self.angleMode === 'deg') {
-                            arg = math.unit(arg, 'deg').toNumber('rad');
+            try {
+                let result;
+                switch (node.type) {
+                    case 'Literal':
+                        result = new Decimal(node.value);
+                        break;
+                    case 'BinaryExpression':
+                        result = self.OPERATORS[node.operator](evaluateNode(node.left), evaluateNode(node.right));
+                        break;
+                    case 'UnaryExpression':
+                        result = self.OPERATORS[node.operator](evaluateNode(node.argument));
+                        break;
+                    case 'CallExpression':
+                        let func = node.callee.name;
+                        if (self.FUNCTIONS[func]) {
+                            let arg = evaluateNode(node.arguments[0]);
+                            if (self.angleMode === 'deg') {
+                                arg = Decimal.acos(-1).mul(arg).div(180);  // Convert degrees to radians
+                            }
+                            result = self.FUNCTIONS[func](arg);
+                        } else {
+                            throw new Error(`Unsupported function: ${func}`);
                         }
-                        return self.FUNCTIONS[func](arg);
-                    } else {
-                        throw new Error(`Unsupported function: ${func}`);
-                    }
-                default:
-                    throw new Error(`Unsupported type: ${node.type}`);
+                        break;
+                    default:
+                        throw new Error(`Unsupported type: ${node.type}`);
+                }
+                if (result.isNaN()) {
+                    throw new Error(`Error: Result is Not A Number for expression with operator "${node.operator || 'unknown'}"`);
+                }
+                return result;
+            } catch (error) {
+                throw new Error(error.message);
             }
         }
 
@@ -125,7 +142,7 @@ class MathShell {
                 } else {
                     let node = this.parseExpression(expression).body[0].expression;
                     let result = this.evaluate(node);
-                    console.log(result);
+                    console.log(result.toString());
                 }
             } catch (error) {
                 console.error(`Error: ${error.message}`);
@@ -178,19 +195,29 @@ class MathShell {
 }
 
 MathShell.prototype.OPERATORS = {
-    '+': math.add,
-    '-': math.subtract,
-    '*': math.multiply,
-    '/': math.divide,
-    '**': math.pow,
-    '%': math.mod,
-    '-': math.unaryMinus
+    '+': (a, b) => a.add(b),
+    '-': (a, b) => a.sub(b),
+    '*': (a, b) => a.mul(b),
+    '/': (a, b) => {
+        if (b.isZero()) {
+            throw new Error('Division by zero error');
+        }
+        return a.div(b);
+    },
+    '**': (a, b) => a.pow(b),
+    '%': (a, b) => {
+        if (b.isZero()) {
+            throw new Error('Modulo by zero error');
+        }
+        return a.mod(b);
+    },
+    '-': (a) => a.neg()
 };
 
 MathShell.prototype.FUNCTIONS = {
-    'sin': math.sin,
-    'cos': math.cos,
-    'tan': math.tan
+    'sin': (a) => Decimal.sin(a),
+    'cos': (a) => Decimal.cos(a),
+    'tan': (a) => Decimal.tan(a)
 };
 
 const shell = new MathShell();
