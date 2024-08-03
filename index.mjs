@@ -2,11 +2,46 @@ import readline from 'readline';
 import Decimal from 'decimal.js';
 import esprima from 'esprima';
 import chalk from 'chalk';
+import fs from 'fs';
+import path from 'path';
+import stripAnsi from 'strip-ansi';
+
+const configDir = path.join(process.env.HOME || process.env.USERPROFILE, '.config/mash');
+const configFile = path.join(configDir, 'config.js');
+
+// default config
+const defaultConfig = `
+module.exports = {
+    // default angle mode (deg / ran)
+    angleMode: 'deg',
+
+    // prompt
+    prompt: function(angleMode, commandMode) {
+        return angleMode + ' ' + (commandMode ? '%' : '‣') + ' ';
+    }
+};
+`;
+
+// Create configuration directory and file (if not exist)
+if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+}
+
+if (!fs.existsSync(configFile)) {
+    fs.writeFileSync(configFile, defaultConfig, 'utf-8');
+}
+
+// Dynamically import configuration file
+async function loadConfig() {
+    const config = await import(`file://${configFile}`);
+    return config.default;
+}
 
 class MathShell {
-    constructor() {
-        this.angleMode = 'deg';
+    constructor(config) {
+        this.angleMode = (config.angleMode === 'ran' ? 'ran' : 'deg') || 'deg';
         this.commandMode = false;
+        this.promptFunc = config.prompt || ((angleMode, commandMode) => `${angleMode} ${commandMode ? '%' : '‣'} `);
     }
 
     /**
@@ -110,7 +145,7 @@ class MathShell {
         const rl = readline.createInterface({
             input: process.stdin,
             output: process.stdout,
-            prompt: `${this.angleMode} ‣ `,
+            prompt: this.promptFunc(this.angleMode, this.commandMode),
             completer: this.completer.bind(this)
         });
 
@@ -120,7 +155,7 @@ class MathShell {
             let expression = line.trim();
             if (expression === "") {
                 this.commandMode = !this.commandMode;
-                rl.setPrompt(`${this.angleMode} ${this.commandMode ? '%' : '‣'} `);
+                rl.setPrompt(this.promptFunc(this.angleMode, this.commandMode));
                 rl.prompt();
                 return;
             }
@@ -162,8 +197,8 @@ class MathShell {
                 const cursorPosition = rl.cursor;
                 rl._refreshLine();
                 const highlightedLine = this.highlightInput(currentLine);
-                rl.output.write(`\r\x1b[K${rl._prompt}${highlightedLine}`);
-                rl.output.write(`\r\x1b[${cursorPosition + rl._prompt.length}C`);
+                rl.output.write(`\r\x1b[K${this.promptFunc(this.angleMode, this.commandMode)}${highlightedLine}`);
+                rl.output.write(`\r\x1b[${cursorPosition + stripAnsi(this.promptFunc(this.angleMode, this.commandMode)).length}C`);
             }, 0);
         });
     }
@@ -220,8 +255,6 @@ MathShell.prototype.FUNCTIONS = {
     'tan': (a) => Decimal.tan(a)
 };
 
-const shell = new MathShell();
-
 const originalLog = console.log;
 console.log = function(...args) {
     originalLog(chalk.reset(...args));
@@ -232,4 +265,8 @@ console.error = function(...args) {
     originalError(chalk.red(...args));
 };
 
-shell.runShell();
+(async () => {
+    const config = await loadConfig();
+    const shell = new MathShell(config);
+    shell.runShell();
+})();

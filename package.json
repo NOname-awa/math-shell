@@ -16,7 +16,8 @@
   "dependencies": {
     "chalk": "^5.0.0",
     "esprima": "^4.0.1",
-    "mathjs": "^11.7.0"
+    "mathjs": "^11.7.0",
+    "strip-ansi": "^7.1.0"
   },
   "type": "module"
 }
