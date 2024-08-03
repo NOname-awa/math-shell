@@ -9,10 +9,21 @@ class MathShell {
         this.commandMode = false;
     }
 
+    /**
+     * Parses a mathematical expression using Esprima.
+     * @param {string} expression - The expression to parse.
+     * @returns {Object} The parsed expression node.
+     */
     parseExpression(expression) {
         return esprima.parseScript(expression);
     }
 
+    /**
+     * Evaluates a parsed expression node.
+     * @param {Object} node - The expression node to evaluate.
+     * @returns {number} The result of the evaluation.
+     * @throws Will throw an error if the node type is unsupported.
+     */
     evaluate(node) {
         let self = this;
 
@@ -43,6 +54,11 @@ class MathShell {
         return evaluateNode(node);
     }
 
+    /**
+     * Highlights the input expression for better readability.
+     * @param {string} input - The input expression to highlight.
+     * @returns {string} The highlighted expression.
+     */
     highlightInput(input) {
         let highlighted = input
             .replace(/\b(\d+(\.\d+)?)\b/g, chalk.green('$1')) // Highlight numbers
@@ -70,6 +86,9 @@ class MathShell {
         return highlighted;
     }
 
+    /**
+     * Runs the interactive shell.
+     */
     runShell() {
         const rl = readline.createInterface({
             input: process.stdin,
@@ -132,6 +151,10 @@ class MathShell {
         });
     }
 
+    /**
+     * Executes a command in command mode.
+     * @param {string} command - The command to execute.
+     */
     executeCommand(command) {
         if (command.toLowerCase() === 'set ran') {
             this.angleMode = 'rad';
@@ -142,6 +165,11 @@ class MathShell {
         }
     }
 
+    /**
+     * Provides tab completion for commands and functions.
+     * @param {string} line - The current input line.
+     * @returns {[string[], string]} The completion hits and the line.
+     */
     completer(line) {
         const completions = 'set ran set deg cls exit sin cos tan'.split(' ');
         const hits = completions.filter((c) => c.startsWith(line));
