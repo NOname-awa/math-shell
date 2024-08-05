@@ -18,7 +18,9 @@
     "commander": "^12.1.0",
     "esprima": "^4.0.1",
     "mathjs": "^11.7.0",
-    "strip-ansi": "^7.1.0"
+    "pkg": "^5.8.1",
+    "strip-ansi": "^7.1.0",
+    "vorpal": "^1.12.0"
   },
   "type": "module"
 }

@@ -1,9 +1,8 @@
-import readline from 'readline';
+import vorpal from 'vorpal';
 import Decimal from 'decimal.js';
 import esprima from 'esprima';
 import fs from 'fs';
 import path from 'path';
-import { program } from 'commander';
 
 const configDir = path.join(process.env.HOME || process.env.USERPROFILE, '.config/mash');
 const configFile = path.join(configDir, 'config.js');
@@ -11,12 +10,12 @@ const configFile = path.join(configDir, 'config.js');
 // default config
 const defaultConfig = `
 module.exports = {
-    // default angle mode (deg / ran)
+    // default angle mode (deg / rad)
     angleMode: 'deg',
 
     // prompt
     prompt: function(angleMode, commandMode) {
-        return '\\n' + (angleMode === 'deg' ? 'degree' : 'radian') + ' mode - ' + (commandMode ? 'command' : 'calc') + '\\n' + (commandMode ? '%' : '‣') + ' ';
+        return '\\u200B\\n' + (angleMode === 'deg' ? 'degree' : 'radian') + ' mode - ' + (commandMode ? 'command' : 'calc') + '\\n' + (commandMode ? '%' : '‣') + ' ';
     }
 };
 `;
@@ -110,68 +109,99 @@ class MathShell {
      * Runs the interactive shell.
      */
     runShell() {
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-            prompt: this.promptFunc(this.angleMode, this.commandMode),
-            completer: this.completer.bind(this)
-        });
+        const vorpalInstance = vorpal();
 
-        rl.prompt();
+        // Remove the default exit command
+        vorpalInstance.find('exit').remove();
 
-        rl.on('line', (line) => {
-            let expression = line.trim();
-            if (expression === '') {
-                rl.prompt();
-                return;
-            }
+        vorpalInstance
+            .delimiter(this.promptFunc(this.angleMode, this.commandMode))
+            .show();
 
-            if (expression === 'ch') {
+        vorpalInstance
+            .command('ch', 'Toggle command mode')
+            .action((args, callback) => {
                 this.commandMode = !this.commandMode;
-                rl.setPrompt(this.promptFunc(this.angleMode, this.commandMode));
-                rl.prompt();
-                return;
-            }
+                vorpalInstance.delimiter(this.promptFunc(this.angleMode, this.commandMode));
+                callback();
+            });
 
-            if (expression === 'cls') {
+        vorpalInstance
+            .command('cls', 'Clear the screen')
+            .action((args, callback) => {
                 console.clear();
-                rl.prompt();
-                return;
-            }
+                callback();
+            });
 
-            if (expression === "exit") {
-                rl.close();
-                return;
-            }
+        vorpalInstance
+            .command('exit', 'Exit the shell')
+            .action((args, callback) => {
+                process.exit(0);
+            });
 
-            try {
-                if (this.commandMode || expression[0] === ':') {
-                    this.executeCommand(expression, rl);
-                } else {
-                    let node = this.parseExpression(expression).body[0].expression;
-                    let result = this.evaluate(node);
-                    console.log(result.toString());
+        vorpalInstance
+            .command('set <mode>', 'Set angle mode')
+            .autocomplete(['rad', 'deg'])
+            .action((args, callback) => {
+                if (!this.commandMode) {
+                    console.error('Error: set command can only be used in command mode');
+                    callback();
+                    return;
                 }
-            } catch (error) {
-                console.error(`Error: ${error.message}`);
-            }
+                switch (args.mode) {
+                    case 'rad':
+                        this.angleMode = 'rad';
+                        break;
+                    case 'deg':
+                        this.angleMode = 'deg';
+                        break;
+                    default:
+                        console.error(`Unknown mode: ${args.mode}`);
+                }
+                vorpalInstance.delimiter(this.promptFunc(this.angleMode, this.commandMode));
+                callback();
+            });
 
-            rl.prompt();
-        });
+        vorpalInstance
+            .catch('[expression...]', 'Evaluate a mathematical expression')
+            .autocomplete({
+                data: () => this.commandMode 
+                    ? ['ch', 'cls', 'exit', 'set rad', 'set deg']
+                    : ['sin', 'cos', 'tan', 'abs', 'log', 'exp', 'sqrt', 'pi', 'e']
+            })
+            .action((args, callback) => {
+                let expression = args.expression.join(' ').trim();
+                if (expression === '') {
+                    callback();
+                    return;
+                }
 
-        rl.on('close', () => {
-            process.exit(0);
-        });
+                if (this.commandMode) {
+                    this.executeCommand(expression, vorpalInstance, callback);
+                } else {
+                    if (expression[0] === ':') {
+                        this.executeCommand(expression.slice(1), vorpalInstance, callback);
+                    } else {
+                        try {
+                            let node = this.parseExpression(expression).body[0].expression;
+                            let result = this.evaluate(node);
+                            console.log(result.toString());
+                        } catch (error) {
+                            console.error(`Error: ${error.message}`);
+                        }
+                        callback();
+                    }
+                }
+            });
     }
 
     /**
      * Executes a command in command mode.
      * @param {string} command - The command to execute.
+     * @param {Object} vorpalInstance - The vorpal instance.
+     * @param {function} callback - The callback function.
      */
-    executeCommand(command, rl) {
-        if (command[0] === ':') {
-            command = command.slice(1);
-        }
+    executeCommand(command, vorpalInstance, callback) {
         const commandArr = command.split(' ').filter(elm => elm);
         switch (commandArr[0]) {
             case 'set': {
@@ -180,22 +210,12 @@ class MathShell {
                     case 'deg': this.angleMode = 'deg'; break;
                     default: console.error(`Unknown command: ${commandArr[1]}`);
                 }
-                rl.setPrompt(this.promptFunc(this.angleMode, this.commandMode));
+                vorpalInstance.delimiter(this.promptFunc(this.angleMode, this.commandMode));
                 break;
             }
             default: console.error(`Unknown command: ${commandArr[0]}`);
         }
-    }
-
-    /**
-     * Provides tab completion for commands and functions.
-     * @param {string} line - The current input line.
-     * @returns {[string[], string]} The completion hits and the line.
-     */
-    completer(line) {
-        const completions = 'set rad set deg cls exit sin cos tan'.split(' ');
-        const hits = completions.filter((c) => c.startsWith(line));
-        return [hits.length ? hits : completions, line];
+        callback();
     }
 
     /**
@@ -266,17 +286,10 @@ MathShell.prototype.FUNCTIONS = {
     'sin': (a, mode) => Decimal.sin(toDeg(a, mode)),
     'cos': (a, mode) => Decimal.cos(toDeg(a, mode)),
     'tan': (a, mode) => Decimal.tan(toDeg(a, mode)),
-    'abs': (a, mode) => Decimal.abs(a)
-};
-
-const originalLog = console.log;
-console.log = function(...args) {
-    originalLog(...args);
-};
-
-const originalError = console.error;
-console.error = function(...args) {
-    originalError(...args);
+    'abs': (a, mode) => Decimal.abs(a),
+    'log': (a, mode) => Decimal.log(a),
+    'exp': (a, mode) => Decimal.exp(a),
+    'sqrt': (a, mode) => Decimal.sqrt(a)
 };
 
 (async () => {
