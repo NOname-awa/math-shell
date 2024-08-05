@@ -1,10 +1,9 @@
 import readline from 'readline';
 import Decimal from 'decimal.js';
 import esprima from 'esprima';
-import chalk from 'chalk';
 import fs from 'fs';
 import path from 'path';
-import stripAnsi from 'strip-ansi';
+import { program } from 'commander';
 
 const configDir = path.join(process.env.HOME || process.env.USERPROFILE, '.config/mash');
 const configFile = path.join(configDir, 'config.js');
@@ -17,7 +16,7 @@ module.exports = {
 
     // prompt
     prompt: function(angleMode, commandMode) {
-        return angleMode + ' ' + (commandMode ? '%' : '‣') + ' ';
+        return '\\n' + (angleMode === 'deg' ? 'degree' : 'radian') + ' mode - ' + (commandMode ? 'command' : 'calc') + '\\n' + (commandMode ? '%' : '‣') + ' ';
     }
 };
 `;
@@ -39,9 +38,13 @@ async function loadConfig() {
 
 class MathShell {
     constructor(config) {
-        this.angleMode = (config.angleMode === 'ran' ? 'ran' : 'deg') || 'deg';
+        this.angleMode = (config.angleMode === 'rad' ? 'rad' : 'deg') || 'deg';
         this.commandMode = false;
         this.promptFunc = config.prompt || ((angleMode, commandMode) => `${angleMode} ${commandMode ? '%' : '‣'} `);
+        this.vars = {
+            pi: Math.PI,
+            e: Math.E
+        }
     }
 
     /**
@@ -83,10 +86,7 @@ class MathShell {
                         let func = node.callee.name;
                         if (self.FUNCTIONS[func]) {
                             let arg = evaluateNode(node.arguments[0]);
-                            if (self.angleMode === 'deg') {
-                                arg = Decimal.acos(-1).mul(arg).div(180);  // Convert degrees to radians
-                            }
-                            result = self.FUNCTIONS[func](arg);
+                            result = self.FUNCTIONS[func](arg, self.angleMode);
                         } else {
                             throw new Error(`Unsupported function: ${func}`);
                         }
@@ -107,38 +107,6 @@ class MathShell {
     }
 
     /**
-     * Highlights the input expression for better readability.
-     * @param {string} input - The input expression to highlight.
-     * @returns {string} The highlighted expression.
-     */
-    highlightInput(input) {
-        let highlighted = input
-            .replace(/\b(\d+(\.\d+)?)\b/g, chalk.green('$1')) // Highlight numbers
-            .replace(/(\+|\-|\*|\/|\%|\*\*|=)/g, chalk.yellow('$1')) // Highlight operators
-            .replace(/\b(sin|cos|tan)\b/g, chalk.cyan('$1')); // Highlight functions
-
-        // Highlight parentheses with rainbow colors
-        let colorIndex = 0;
-        const colors = [chalk.yellow, chalk.hex('#800080'), chalk.blue];
-        let stack = [];
-
-        highlighted = highlighted.replace(/[\(\)]/g, (match) => {
-            if (match === '(') {
-                stack.push(colorIndex);
-                let coloredBracket = colors[colorIndex](match);
-                colorIndex = (colorIndex + 1) % colors.length;
-                return coloredBracket;
-            } else if (match === ')') {
-                colorIndex = stack.pop();
-                return (colors[colorIndex] ?? chalk.red)(match);
-            }
-            return match;
-        });
-
-        return highlighted;
-    }
-
-    /**
      * Runs the interactive shell.
      */
     runShell() {
@@ -153,14 +121,19 @@ class MathShell {
 
         rl.on('line', (line) => {
             let expression = line.trim();
-            if (expression === "") {
+            if (expression === '') {
+                rl.prompt();
+                return;
+            }
+
+            if (expression === 'ch') {
                 this.commandMode = !this.commandMode;
                 rl.setPrompt(this.promptFunc(this.angleMode, this.commandMode));
                 rl.prompt();
                 return;
             }
 
-            if (expression === "cls") {
+            if (expression === 'cls') {
                 console.clear();
                 rl.prompt();
                 return;
@@ -172,8 +145,8 @@ class MathShell {
             }
 
             try {
-                if (this.commandMode) {
-                    this.executeCommand(expression);
+                if (this.commandMode || expression[0] === ':') {
+                    this.executeCommand(expression, rl);
                 } else {
                     let node = this.parseExpression(expression).body[0].expression;
                     let result = this.evaluate(node);
@@ -189,31 +162,28 @@ class MathShell {
         rl.on('close', () => {
             process.exit(0);
         });
-
-        // Use this to handle real-time input with highlighting
-        rl.input.on('keypress', (char, key) => {
-            setTimeout(() => {
-                const currentLine = rl.line;
-                const cursorPosition = rl.cursor;
-                rl._refreshLine();
-                const highlightedLine = this.highlightInput(currentLine);
-                rl.output.write(`\r\x1b[K${this.promptFunc(this.angleMode, this.commandMode)}${highlightedLine}`);
-                rl.output.write(`\r\x1b[${cursorPosition + stripAnsi(this.promptFunc(this.angleMode, this.commandMode)).length}C`);
-            }, 0);
-        });
     }
 
     /**
      * Executes a command in command mode.
      * @param {string} command - The command to execute.
      */
-    executeCommand(command) {
-        if (command.toLowerCase() === 'set ran') {
-            this.angleMode = 'rad';
-        } else if (command.toLowerCase() === 'set deg') {
-            this.angleMode = 'deg';
-        } else {
-            console.log(`Unknown command: ${command}`);
+    executeCommand(command, rl) {
+        if (command[0] === ':') {
+            command = command.slice(1);
+        }
+        const commandArr = command.split(' ').filter(elm => elm);
+        switch (commandArr[0]) {
+            case 'set': {
+                switch (commandArr[1]) {
+                    case 'rad': this.angleMode = 'rad'; break;
+                    case 'deg': this.angleMode = 'deg'; break;
+                    default: console.error(`Unknown command: ${commandArr[1]}`);
+                }
+                rl.setPrompt(this.promptFunc(this.angleMode, this.commandMode));
+                break;
+            }
+            default: console.error(`Unknown command: ${commandArr[0]}`);
         }
     }
 
@@ -223,9 +193,45 @@ class MathShell {
      * @returns {[string[], string]} The completion hits and the line.
      */
     completer(line) {
-        const completions = 'set ran set deg cls exit sin cos tan'.split(' ');
+        const completions = 'set rad set deg cls exit sin cos tan'.split(' ');
         const hits = completions.filter((c) => c.startsWith(line));
         return [hits.length ? hits : completions, line];
+    }
+
+    /**
+     * Process command line arguments and evaluate if present.
+     * @param {string[]} args - Command line arguments.
+     */
+    processArgs(args) {
+        let mode = this.angleMode;
+        let expression = [];
+
+        args.forEach(arg => {
+            if (arg === '--rad') {
+                mode = 'rad';
+            } else if (arg === '--deg') {
+                mode = 'deg';
+            } else {
+                expression.push(arg);
+            }
+        });
+
+        this.angleMode = mode;
+
+        if (expression.length > 0) {
+            try {
+                let expr = expression.join(' ');
+                let node = this.parseExpression(expr).body[0].expression;
+                let result = this.evaluate(node);
+                console.log(result.toString());
+                process.exit(0);
+            } catch (error) {
+                console.error(`Error: ${error.message}`);
+                process.exit(1);
+            }
+        } else {
+            this.runShell();
+        }
     }
 }
 
@@ -249,24 +255,33 @@ MathShell.prototype.OPERATORS = {
     '-': (a) => a.neg()
 };
 
+const toDeg = (arg, mode) => {
+    if (mode === 'deg') {
+        arg = Decimal.acos(-1).mul(arg).div(180);  // Convert degrees to radians
+    }
+    return arg;
+}
+
 MathShell.prototype.FUNCTIONS = {
-    'sin': (a) => Decimal.sin(a),
-    'cos': (a) => Decimal.cos(a),
-    'tan': (a) => Decimal.tan(a)
+    'sin': (a, mode) => Decimal.sin(toDeg(a, mode)),
+    'cos': (a, mode) => Decimal.cos(toDeg(a, mode)),
+    'tan': (a, mode) => Decimal.tan(toDeg(a, mode)),
+    'abs': (a, mode) => Decimal.abs(a)
 };
 
 const originalLog = console.log;
 console.log = function(...args) {
-    originalLog(chalk.reset(...args));
+    originalLog(...args);
 };
 
 const originalError = console.error;
 console.error = function(...args) {
-    originalError(chalk.red(...args));
+    originalError(...args);
 };
 
 (async () => {
     const config = await loadConfig();
     const shell = new MathShell(config);
-    shell.runShell();
+    const args = process.argv.slice(2); // Get command line arguments
+    shell.processArgs(args);
 })();
