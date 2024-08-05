@@ -42,7 +42,8 @@ class MathShell {
         this.promptFunc = config.prompt || ((angleMode, commandMode) => `${angleMode} ${commandMode ? '%' : '‣'} `);
         this.vars = {
             pi: Math.PI,
-            e: Math.E
+            e: Math.E,
+            ans: 0
         }
     }
 
@@ -52,6 +53,16 @@ class MathShell {
      * @returns {Object} The parsed expression node.
      */
     parseExpression(expression) {
+        // Replace $var with the actual variable name
+        expression = expression.replace(/\$(\w+)/g, (match, p1) => {
+            const varName = p1.toLowerCase();
+            if (this.vars.hasOwnProperty(varName)) {
+                return this.vars[varName].toString();
+            } else {
+                throw new Error(`Undefined variable: ${p1}`);
+            }
+        });
+
         try {
             return esprima.parseScript(expression);
         } catch (error) {
@@ -111,7 +122,6 @@ class MathShell {
     runShell() {
         const vorpalInstance = vorpal();
 
-        // Remove the default exit command
         vorpalInstance.find('exit').remove();
 
         vorpalInstance
@@ -163,10 +173,24 @@ class MathShell {
             });
 
         vorpalInstance
+            .command('var <name> = <value>', 'Set a variable')
+            .action((args, callback) => {
+                if (!this.commandMode) {
+                    console.error('Error: var command can only be used in command mode');
+                    callback();
+                    return;
+                }
+                const varName = args.name.toLowerCase();
+                this.vars[varName] = new Decimal(args.value);
+                console.log(`Variable ${varName} set to ${args.value}`);
+                callback();
+            });
+
+        vorpalInstance
             .catch('[expression...]', 'Evaluate a mathematical expression')
             .autocomplete({
                 data: () => this.commandMode 
-                    ? ['ch', 'cls', 'exit', 'set rad', 'set deg']
+                    ? ['ch', 'cls', 'exit', 'set rad', 'set deg', 'var']
                     : ['sin', 'cos', 'tan', 'abs', 'log', 'exp', 'sqrt', 'pi', 'e']
             })
             .action((args, callback) => {
@@ -185,6 +209,7 @@ class MathShell {
                         try {
                             let node = this.parseExpression(expression).body[0].expression;
                             let result = this.evaluate(node);
+                            this.vars.ans = result;  // Save result in ans
                             console.log(result.toString());
                         } catch (error) {
                             console.error(`Error: ${error.message}`);
@@ -203,14 +228,25 @@ class MathShell {
      */
     executeCommand(command, vorpalInstance, callback) {
         const commandArr = command.split(' ').filter(elm => elm);
-        switch (commandArr[0]) {
+        switch (commandArr[0].toLowerCase()) {
             case 'set': {
-                switch (commandArr[1]) {
+                switch (commandArr[1].toLowerCase()) {
                     case 'rad': this.angleMode = 'rad'; break;
                     case 'deg': this.angleMode = 'deg'; break;
                     default: console.error(`Unknown command: ${commandArr[1]}`);
                 }
                 vorpalInstance.delimiter(this.promptFunc(this.angleMode, this.commandMode));
+                break;
+            }
+            case 'var': {
+                if (commandArr.length !== 4 || commandArr[2] !== '=') {
+                    console.error('Invalid var command. Usage: var <name> = <value>');
+                } else {
+                    const varName = commandArr[1].toLowerCase();
+                    const varValue = commandArr[3];
+                    this.vars[varName] = new Decimal(varValue);
+                    console.log(`Variable ${varName} set to ${varValue}`);
+                }
                 break;
             }
             default: console.error(`Unknown command: ${commandArr[0]}`);
@@ -243,6 +279,7 @@ class MathShell {
                 let expr = expression.join(' ');
                 let node = this.parseExpression(expr).body[0].expression;
                 let result = this.evaluate(node);
+                this.vars.ans = result;  // Save result in ans
                 console.log(result.toString());
                 process.exit(0);
             } catch (error) {
