@@ -4,56 +4,50 @@ import esprima from 'esprima';
 import fs from 'fs';
 import path from 'path';
 
-const configDir = path.join(process.env.HOME || process.env.USERPROFILE, '.config/mash');
-const configFile = path.join(configDir, 'config.js');
+const CONFIG_DIR = path.join(process.env.HOME || process.env.USERPROFILE, '.config/mash');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.js');
 
-// default config
-const defaultConfig = `
+// Default configuration
+const DEFAULT_CONFIG = `
 module.exports = {
-    // default angle mode (deg / rad)
     angleMode: 'deg',
-
-    // prompt
     prompt: function(angleMode, commandMode) {
         return '\\u200B\\n' + (angleMode === 'deg' ? 'degree' : 'radian') + ' mode - ' + (commandMode ? 'command' : 'calc') + '\\n' + (commandMode ? '%' : '‣') + ' ';
     }
 };
 `;
 
-// Create configuration directory and file (if not exist)
-if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
+// Ensure configuration file exists
+if (!fs.existsSync(CONFIG_DIR)) {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
 }
-
-if (!fs.existsSync(configFile)) {
-    fs.writeFileSync(configFile, defaultConfig, 'utf-8');
+if (!fs.existsSync(CONFIG_FILE)) {
+    fs.writeFileSync(CONFIG_FILE, DEFAULT_CONFIG, 'utf-8');
 }
 
 // Dynamically import configuration file
 async function loadConfig() {
-    const config = await import(`file://${configFile}`);
+    const config = await import(`file://${CONFIG_FILE}`);
     return config.default;
 }
 
 class MathShell {
     constructor(config) {
-        this.angleMode = (config.angleMode === 'rad' ? 'rad' : 'deg') || 'deg';
+        this.angleMode = config.angleMode === 'rad' ? 'rad' : 'deg';
         this.commandMode = false;
-        this.promptFunc = config.prompt || ((angleMode, commandMode) => `${angleMode} ${commandMode ? '%' : '‣'} `);
+        this.promptFunc = config.prompt || this.defaultPrompt;
         this.vars = {
             pi: Math.PI,
             e: Math.E,
             ans: 0
-        }
+        };
     }
 
-    /**
-     * Parses a mathematical expression using Esprima.
-     * @param {string} expression - The expression to parse.
-     * @returns {Object} The parsed expression node.
-     */
+    defaultPrompt(angleMode, commandMode) {
+        return `${angleMode} ${commandMode ? '%' : '‣'} `;
+    }
+
     parseExpression(expression) {
-        // Replace $var with the actual variable name
         expression = expression.replace(/\$(\w+)/g, (match, p1) => {
             const varName = p1.toLowerCase();
             if (this.vars.hasOwnProperty(varName)) {
@@ -64,70 +58,73 @@ class MathShell {
         });
 
         try {
-            return esprima.parseScript(expression);
+            let parsedExpression = esprima.parseScript(expression);
+            this.markUnaryMinus(parsedExpression.body[0].expression);
+            return parsedExpression;
         } catch (error) {
             throw new SyntaxError(`Syntax Error: ${error.message} in expression "${expression}"`);
         }
     }
 
-    /**
-     * Evaluates a parsed expression node.
-     * @param {Object} node - The expression node to evaluate.
-     * @returns {Decimal} The result of the evaluation.
-     * @throws Will throw an error if the node type is unsupported.
-     */
+    markUnaryMinus(node) {
+        if (node.type === 'BinaryExpression') {
+            this.markUnaryMinus(node.left);
+            this.markUnaryMinus(node.right);
+        } else if (node.type === 'UnaryExpression' && node.operator === '-') {
+            node.isUnaryMinus = true;
+        }
+    }
+
     evaluate(node) {
-        let self = this;
+        const self = this;
 
         function evaluateNode(node) {
-            try {
-                let result;
-                switch (node.type) {
-                    case 'Literal':
-                        result = new Decimal(node.value);
-                        break;
-                    case 'BinaryExpression':
-                        result = self.OPERATORS[node.operator](evaluateNode(node.left), evaluateNode(node.right));
-                        break;
-                    case 'UnaryExpression':
-                        result = self.OPERATORS[node.operator](evaluateNode(node.argument));
-                        break;
-                    case 'CallExpression':
-                        let func = node.callee.name;
-                        if (self.FUNCTIONS[func]) {
-                            let arg = evaluateNode(node.arguments[0]);
-                            result = self.FUNCTIONS[func](arg, self.angleMode);
-                        } else {
-                            throw new Error(`Unsupported function: ${func}`);
-                        }
-                        break;
-                    default:
-                        throw new Error(`Unsupported type: ${node.type}`);
-                }
-                if (result.isNaN()) {
-                    throw new Error(`Error: Result is Not A Number for expression with operator "${node.operator || 'unknown'}"`);
-                }
-                return result;
-            } catch (error) {
-                throw new Error(error.message);
+            let result;
+            switch (node.type) {
+                case 'Literal':
+                    result = new Decimal(node.value);
+                    break;
+                case 'BinaryExpression':
+                    result = self.OPERATORS[node.operator](evaluateNode(node.left), evaluateNode(node.right));
+                    break;
+                case 'UnaryExpression':
+                    result = node.isUnaryMinus 
+                        ? self.OPERATORS['-unary'](evaluateNode(node.argument))
+                        : self.OPERATORS[node.operator](evaluateNode(node.argument));
+                    break;
+                case 'CallExpression':
+                    const func = node.callee.name;
+                    if (self.FUNCTIONS[func]) {
+                        const arg = evaluateNode(node.arguments[0]);
+                        result = self.FUNCTIONS[func](arg, self.angleMode);
+                    } else {
+                        throw new Error(`Unsupported function: ${func}`);
+                    }
+                    break;
+                default:
+                    throw new Error(`Unsupported type: ${node.type}`);
             }
+            if (result.isNaN()) {
+                throw new Error(`Error: Result is Not A Number for expression with operator "${node.operator || 'unknown'}"`);
+            }
+            return result;
         }
 
         return evaluateNode(node);
     }
 
-    /**
-     * Runs the interactive shell.
-     */
     runShell() {
         const vorpalInstance = vorpal();
-
         vorpalInstance.find('exit').remove();
 
         vorpalInstance
             .delimiter(this.promptFunc(this.angleMode, this.commandMode))
             .show();
 
+        this.setupCommands(vorpalInstance);
+    }
+
+    setupCommands(vorpalInstance) {
         vorpalInstance
             .command('ch', 'Toggle command mode')
             .action((args, callback) => {
@@ -145,9 +142,7 @@ class MathShell {
 
         vorpalInstance
             .command('exit', 'Exit the shell')
-            .action((args, callback) => {
-                process.exit(0);
-            });
+            .action(() => process.exit(0));
 
         vorpalInstance
             .command('set <mode>', 'Set angle mode')
@@ -158,16 +153,7 @@ class MathShell {
                     callback();
                     return;
                 }
-                switch (args.mode) {
-                    case 'rad':
-                        this.angleMode = 'rad';
-                        break;
-                    case 'deg':
-                        this.angleMode = 'deg';
-                        break;
-                    default:
-                        console.error(`Unknown mode: ${args.mode}`);
-                }
+                this.angleMode = args.mode.toLowerCase();
                 vorpalInstance.delimiter(this.promptFunc(this.angleMode, this.commandMode));
                 callback();
             });
@@ -188,79 +174,61 @@ class MathShell {
 
         vorpalInstance
             .catch('[expression...]', 'Evaluate a mathematical expression')
-            .autocomplete({
-                data: () => this.commandMode 
-                    ? ['ch', 'cls', 'exit', 'set rad', 'set deg', 'var']
-                    : ['sin', 'cos', 'tan', 'abs', 'log', 'exp', 'sqrt', 'pi', 'e']
-            })
             .action((args, callback) => {
-                let expression = args.expression.join(' ').trim();
-                if (expression === '') {
-                    callback();
-                    return;
-                }
-
-                if (this.commandMode) {
-                    this.executeCommand(expression, vorpalInstance, callback);
+                const expression = args.expression.join(' ').trim();
+                if (expression) {
+                    this.evaluateExpression(expression, vorpalInstance, callback);
                 } else {
-                    if (expression[0] === ':') {
-                        this.executeCommand(expression.slice(1), vorpalInstance, callback);
-                    } else {
-                        try {
-                            let node = this.parseExpression(expression).body[0].expression;
-                            let result = this.evaluate(node);
-                            this.vars.ans = result;  // Save result in ans
-                            console.log(result.toString());
-                        } catch (error) {
-                            console.error(`Error: ${error.message}`);
-                        }
-                        callback();
-                    }
+                    callback();
                 }
             });
     }
 
-    /**
-     * Executes a command in command mode.
-     * @param {string} command - The command to execute.
-     * @param {Object} vorpalInstance - The vorpal instance.
-     * @param {function} callback - The callback function.
-     */
-    executeCommand(command, vorpalInstance, callback) {
-        const commandArr = command.split(' ').filter(elm => elm);
-        switch (commandArr[0].toLowerCase()) {
-            case 'set': {
-                switch (commandArr[1].toLowerCase()) {
-                    case 'rad': this.angleMode = 'rad'; break;
-                    case 'deg': this.angleMode = 'deg'; break;
-                    default: console.error(`Unknown command: ${commandArr[1]}`);
+    evaluateExpression(expression, vorpalInstance, callback) {
+        if (this.commandMode) {
+            this.executeCommand(expression, vorpalInstance, callback);
+        } else {
+            if (expression.startsWith(':')) {
+                this.executeCommand(expression.slice(1), vorpalInstance, callback);
+            } else {
+                try {
+                    const node = this.parseExpression(expression).body[0].expression;
+                    const result = this.evaluate(node);
+                    this.vars.ans = result;
+                    console.log(result.toString());
+                } catch (error) {
+                    console.error(`Error: ${error.message}`);
                 }
+                callback();
+            }
+        }
+    }
+
+    executeCommand(command, vorpalInstance, callback) {
+        const commandArr = command.split(' ').filter(Boolean);
+        switch (commandArr[0].toLowerCase()) {
+            case 'set':
+                this.angleMode = commandArr[1].toLowerCase();
                 vorpalInstance.delimiter(this.promptFunc(this.angleMode, this.commandMode));
                 break;
-            }
-            case 'var': {
-                if (commandArr.length !== 4 || commandArr[2] !== '=') {
-                    console.error('Invalid var command. Usage: var <name> = <value>');
-                } else {
+            case 'var':
+                if (commandArr.length === 4 && commandArr[2] === '=') {
                     const varName = commandArr[1].toLowerCase();
-                    const varValue = commandArr[3];
-                    this.vars[varName] = new Decimal(varValue);
-                    console.log(`Variable ${varName} set to ${varValue}`);
+                    this.vars[varName] = new Decimal(commandArr[3]);
+                    console.log(`Variable ${varName} set to ${commandArr[3]}`);
+                } else {
+                    console.error('Invalid var command. Usage: var <name> = <value>');
                 }
                 break;
-            }
-            default: console.error(`Unknown command: ${commandArr[0]}`);
+            default:
+                console.error(`Unknown command: ${commandArr[0]}`);
         }
         callback();
     }
 
-    /**
-     * Process command line arguments and evaluate if present.
-     * @param {string[]} args - Command line arguments.
-     */
     processArgs(args) {
         let mode = this.angleMode;
-        let expression = [];
+        const expression = [];
 
         args.forEach(arg => {
             if (arg === '--rad') {
@@ -275,19 +243,22 @@ class MathShell {
         this.angleMode = mode;
 
         if (expression.length > 0) {
-            try {
-                let expr = expression.join(' ');
-                let node = this.parseExpression(expr).body[0].expression;
-                let result = this.evaluate(node);
-                this.vars.ans = result;  // Save result in ans
-                console.log(result.toString());
-                process.exit(0);
-            } catch (error) {
-                console.error(`Error: ${error.message}`);
-                process.exit(1);
-            }
+            this.evaluateFromArgs(expression.join(' '));
         } else {
             this.runShell();
+        }
+    }
+
+    evaluateFromArgs(expression) {
+        try {
+            const node = this.parseExpression(expression).body[0].expression;
+            const result = this.evaluate(node);
+            this.vars.ans = result;
+            console.log(result.toString());
+            process.exit(0);
+        } catch (error) {
+            console.error(`Error: ${error.message}`);
+            process.exit(1);
         }
     }
 }
@@ -297,41 +268,37 @@ MathShell.prototype.OPERATORS = {
     '-': (a, b) => a.sub(b),
     '*': (a, b) => a.mul(b),
     '/': (a, b) => {
-        if (b.isZero()) {
-            throw new Error('Division by zero error');
-        }
+        if (b.isZero()) throw new Error('Division by zero error');
         return a.div(b);
     },
     '**': (a, b) => a.pow(b),
     '%': (a, b) => {
-        if (b.isZero()) {
-            throw new Error('Modulo by zero error');
-        }
+        if (b.isZero()) throw new Error('Modulo by zero error');
         return a.mod(b);
     },
-    '-': (a) => a.neg()
+    '-unary': (a) => a.neg()
 };
 
 const toDeg = (arg, mode) => {
     if (mode === 'deg') {
-        arg = Decimal.acos(-1).mul(arg).div(180);  // Convert degrees to radians
+        return Decimal.acos(-1).mul(arg).div(180);
     }
     return arg;
-}
+};
 
 MathShell.prototype.FUNCTIONS = {
-    'sin': (a, mode) => Decimal.sin(toDeg(a, mode)),
-    'cos': (a, mode) => Decimal.cos(toDeg(a, mode)),
-    'tan': (a, mode) => Decimal.tan(toDeg(a, mode)),
-    'abs': (a, mode) => Decimal.abs(a),
-    'log': (a, mode) => Decimal.log(a),
-    'exp': (a, mode) => Decimal.exp(a),
-    'sqrt': (a, mode) => Decimal.sqrt(a)
+    sin: (a, mode) => Decimal.sin(toDeg(a, mode)),
+    cos: (a, mode) => Decimal.cos(toDeg(a, mode)),
+    tan: (a, mode) => Decimal.tan(toDeg(a, mode)),
+    abs: (a) => Decimal.abs(a),
+    log: (a) => Decimal.log(a),
+    exp: (a) => Decimal.exp(a),
+    sqrt: (a) => Decimal.sqrt(a)
 };
 
 (async () => {
     const config = await loadConfig();
     const shell = new MathShell(config);
-    const args = process.argv.slice(2); // Get command line arguments
+    const args = process.argv.slice(2);
     shell.processArgs(args);
 })();
